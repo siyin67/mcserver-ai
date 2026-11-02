@@ -349,6 +349,7 @@ docker compose logs -f
 | 备份 / 恢复记忆 | `docker run --rm -v mc-data:/data -v "$PWD":/backup busybox tar czf /backup/memory.tgz -C /data .`（恢复把 `czf` 改成 `xzf`） |
 | 不想留聊天记录 | `.env` 里 `MC_MEMORY_ENABLED=false`，完全不落盘任何对话 |
 | 非 root | 容器默认用 uid/gid 1000 运行；挂载宿主机日志时用 `MC_UID` / `MC_GID` 对齐文件属主 |
+| 国内网络慢 | 在 `.env` 里取消 `APT_MIRROR` / `PIP_INDEX_URL` 两行注释，重建镜像时自动换源；不用改 `Dockerfile`（改了反而会和 `git pull` 冲突） |
 | 手写配置 | 也可以把 `config.json` 挂到 `/app/config.json`，此时环境变量只作兜底 |
 
 不装 Docker 时，下面三种方式任选：

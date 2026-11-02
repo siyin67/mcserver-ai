@@ -25,16 +25,34 @@ ENV PYTHONUNBUFFERED=1 \
 ARG UID=1000
 ARG GID=1000
 
+# ---- 构建加速（可选，默认官方源）----
+# 国内网络慢就传（或在 .env 里设同名变量，compose 会自动带进来）：
+#   APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+#   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# 用 ARG 而不是写死镜像源：别人构建不受影响，你也不用改这个文件。
+ARG APT_MIRROR=
+ARG PIP_INDEX_URL=
+
 WORKDIR /app
 
 # tzdata 只为了让日志时间戳是你所在时区，不是 UTC
-RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata \
- && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ -n "${APT_MIRROR}" ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+        || sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends tzdata; \
+    rm -rf /var/lib/apt/lists/*
 
 # ---- 依赖单独一层，改代码不用重装依赖 ----
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN set -eux; \
+    if [ -n "${PIP_INDEX_URL}" ]; then \
+        pip install --no-cache-dir -r requirements.txt -i "${PIP_INDEX_URL}"; \
+    else \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 # ---- 非 root 用户 ----
 RUN groupadd --gid "${GID}" mcagent \

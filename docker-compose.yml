@@ -19,6 +19,9 @@ services:
       args:
         UID: ${MC_UID:-1000}
         GID: ${MC_GID:-1000}
+        # 国内网络慢就取消 .env 里这两行的注释，构建时会自动换上镜像源
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     image: mcserver-ai:latest
     container_name: mc-agent
     restart: unless-stopped
