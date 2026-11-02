@@ -465,14 +465,18 @@ def say(player: str, text: str, color: str = "white") -> bool:
 
 
 # ================================================================ 四、工具一：RCON
-def execute_rcon(command: str, feedback: str = "", player: str = "") -> str:
+def execute_rcon(command: str, player: str = "") -> str:
     """
     在 Minecraft 服务端执行一条控制台指令（AI 通过 Function Calling 调用它）。
 
-    :param command:  要执行的指令原文，例如 "list"、"give Steve diamond 1"
-    :param feedback: 执行成功后给玩家看的一句中文提示（由 AI 写，程序负责发）
-    :param player:   发起请求的玩家（由程序注入，AI 不可信）
-    :return:         给 AI 看的执行结果字符串（会被放进 tool 消息里）
+    ★ 本函数**不再向游戏里发送任何消息**（没有 feedback、没有 tellraw）：
+      它只做「校验 → 执行 → 原样返回真实结果」，
+      至于怎么向玩家解释，由 agent_core 在整轮对话结束后统一发言。
+      这样同一件事只会出现在聊天栏一次，杜绝“工具说一句、模型再说一句”的刷屏。
+
+    :param command: 要执行的指令原文，例如 "list"、"give Steve diamond 1"
+    :param player:  发起请求的玩家（由程序注入，AI 不可信）
+    :return:        给 AI 看的执行结果字符串（会被放进 tool 消息里）
     """
     cfg = load_config()
     runtime = get_runtime(cfg)
@@ -487,34 +491,30 @@ def execute_rcon(command: str, feedback: str = "", player: str = "") -> str:
 
     max_chars = int(runtime["command_max_chars"])
     if len(cmd) > max_chars:
-        say(player, "这条指令太长了，我不敢执行。", "red")
-        return f"拒绝：指令长度超过 {max_chars} 字符上限。"
+        return f"拒绝：指令长度超过 {max_chars} 字符上限，未执行。"
 
     # ---- 第一道闸门：绝对黑名单（AI 返回的指令再检查一次）----
     blocked = find_blocked_keyword(cmd)
     if blocked:
         log.warning("【硬拦截·RCON】玩家=%s 关键字=%s 指令=%s", player, blocked, cmd[:120])
-        say(player, f"这条指令包含禁用操作「{blocked}」，已拦截。", "red")
-        return f"拦截：指令包含绝对禁止的关键字「{blocked}」，已拒绝执行，服务器未受任何影响。"
+        return (
+            f"拦截：指令包含绝对禁止的关键字「{blocked}」，已拒绝执行，服务器未受任何影响。"
+            f"请如实告诉玩家这条操作被系统禁止，不要换一种写法重试。"
+        )
 
     # ---- 第二道闸门：权限矩阵 ----
     allowed, reason = check_permission(player, cmd, cfg)
     if not allowed:
         log.warning("【权限拒绝·RCON】玩家=%s 指令=%s", player, cmd[:120])
-        say(player, "你的权限不足，这条指令我不能执行。", "red")
-        return f"拒绝：{reason}"
+        return f"拒绝：{reason}。请如实告诉玩家他没有这个权限，不要重试。"
 
     # ---- 真正执行 ----
     ok, output = _rcon_exec(cmd, cfg)
     if not ok:
-        say(player, "指令执行失败了，我这边有点问题。", "red")
-        return f"执行失败：{output}"
+        log.error("【RCON 失败】玩家=%s 指令=%s 原因=%s", player, cmd, output)
+        return f"执行失败：{output}。请如实告诉玩家这次没执行成功。"
 
     log.info("【RCON 成功】玩家=%s 指令=%s 回显=%s", player, cmd, output[:200])
-
-    note = _one_line(feedback, 60)
-    say(player, note or "已经执行好啦。", "green")
-
     return f"执行成功。RCON 回显：{output or '(无回显)'}"
 
 
@@ -660,19 +660,21 @@ def _run_ssh_command(
     return exit_code, out_text, err_text
 
 
-def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
+def execute_ssh(command: str, player: str = "") -> str:
     """
     在“服务器所在的主机”上执行一条只读 shell 命令（查看进程、磁盘、内存等）。
 
     执行位置由 config.json 的 read_mode 决定：
     - local：本机 subprocess 执行，不联网、不加载 paramiko；
     - ssh  ：按需加载 paramiko 连远端主机执行。
-    两道安全闸门（权限 + 黑名单）两种模式完全一致。
+    三道安全闸门（权限 + 黑名单 + shell 危险词）两种模式完全一致。
 
-    :param command:  要执行的 shell 命令，例如 "du -sh ~/server"、"df -h"
-    :param feedback: 执行成功后给玩家看的一句中文提示
-    :param player:   发起请求的玩家（由程序注入）
-    :return:         给 AI 看的执行结果字符串
+    ★ 和 execute_rcon 一样，本函数**不向游戏发送任何消息**，只返回真实输出，
+      由 agent_core 统一把结果讲给玩家听。
+
+    :param command: 要执行的 shell 命令，例如 "du -sh ~/server"、"df -h"
+    :param player:  发起请求的玩家（由程序注入）
+    :return:        给 AI 看的执行结果字符串
     """
     cfg = load_config()
     runtime = get_runtime(cfg)
@@ -688,28 +690,33 @@ def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
 
     max_chars = int(runtime["command_max_chars"])
     if len(raw) > max_chars:
-        say(player, "这条命令太长了，我不敢跑。", "red")
-        return f"拒绝：SSH 命令长度超过 {max_chars} 字符上限。"
+        return f"拒绝：SSH 命令长度超过 {max_chars} 字符上限，未执行。"
 
     # ---- 闸门 0：SSH 是最高危工具，只对 op_whitelist 开放 ----
     if not is_op_player(player, cfg):
         log.warning("【权限拒绝·SSH】非白名单玩家 %s 试图执行：%s", player, raw[:120])
-        say(player, "主机操作只对管理员开放哦。", "red")
-        return f"拒绝：SSH 工具仅限 op_whitelist 玩家使用，玩家 {player} 无权调用。"
+        return (
+            f"拒绝：主机命令仅限 op_whitelist 玩家使用，玩家 {player} 无权调用。"
+            f"请如实告诉玩家这是管理员专属能力。"
+        )
 
     # ---- 闸门 1：绝对黑名单 ----
     blocked = find_blocked_keyword(raw)
     if blocked:
         log.warning("【硬拦截·SSH】玩家=%s 关键字=%s 命令=%s", player, blocked, raw[:120])
-        say(player, f"这条命令包含禁用操作「{blocked}」，已拦截。", "red")
-        return f"拦截：SSH 命令包含绝对禁止的关键字「{blocked}」，已拒绝执行。"
+        return (
+            f"拦截：SSH 命令包含绝对禁止的关键字「{blocked}」，已拒绝执行。"
+            f"请如实告诉玩家这条操作被系统禁止，不要重试。"
+        )
 
     # ---- 闸门 2：shell 危险词 / 危险语法 ----
     hit = _match_ssh_forbidden(raw)
     if hit:
         log.warning("【硬拦截·SSH】玩家=%s 危险片段=%s 命令=%s", player, hit, raw[:120])
-        say(player, "这条命令看起来有破坏性，我不执行。", "red")
-        return f"拦截：SSH 命令包含危险片段「{hit}」，已拒绝执行。"
+        return (
+            f"拦截：SSH 命令包含危险片段「{hit}」，已拒绝执行。"
+            f"请如实告诉玩家这条命令有破坏性，不要换写法重试。"
+        )
 
     # ---- 闸门 3：执行。local 走 subprocess，ssh 才按需 import paramiko ----
     mode = get_read_mode(cfg)
@@ -725,11 +732,9 @@ def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
             exit_code, out_text, err_text = _run_ssh_command(raw, runtime, ssh_cfg)
     except RuntimeError as exc:            # 已有可读中文说明的失败
         log.error("%s执行失败（%s）：%s", where, raw[:80], exc)
-        say(player, "命令没执行成功，具体原因我记到控制台了。", "red")
         return f"{where}执行失败：{exc}"
     except Exception as exc:               # 兜底：任何没预料到的异常都不许冒到 AI 循环里
         log.error("%s执行失败（%s）：%s: %s", where, raw[:80], type(exc).__name__, exc)
-        say(player, "命令没执行成功。" if is_local else "主机连不上，命令没执行。", "red")
         return f"{where}执行失败：{type(exc).__name__}: {exc}"
 
     log.info("【%s 成功】玩家=%s 命令=%s 退出码=%s", "本机" if is_local else "SSH", player, raw, exit_code)
@@ -737,9 +742,6 @@ def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
     limit = int(runtime["ssh_output_max_chars"])
     output = _clean_shell_output(out_text, limit)
     error_output = _clean_shell_output(err_text, limit)
-
-    note = _one_line(feedback, 60)
-    say(player, note or "主机命令已执行。", "green" if exit_code == 0 else "yellow")
 
     pieces = [f"命令执行完成（{where}），退出码 {exit_code}。"]
     if output:

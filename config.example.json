@@ -29,6 +29,16 @@
         "absolute_block": ["stop", "reload", "op", "deop", "ban", "ban-ip", "pardon", "kill @a", "kill @e"]
     },
 
+    "memory": {
+        "file": "memory.json",
+        "enabled": true,
+        "history_limit": 6,
+        "inject_recent": 4,
+        "impression_every": 5,
+        "impression_max_chars": 20,
+        "max_players": 200
+    },
+
     "runtime": {
         "max_tool_rounds": 3,
         "request_timeout": 60,
