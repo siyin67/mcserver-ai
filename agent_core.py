@@ -142,7 +142,8 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "execute_ssh",
             "description": (
-                "在服务器所在的手机/主机上执行一条只读的 Linux shell 命令，"
+                "在服务器所在的主机上执行一条只读的 shell 命令"
+                "（取决于配置：local 模式在本机执行，ssh 模式连远端主机执行），"
                 "用于查看系统状态：df -h、free -m、uptime、du -sh ~/server、ls -l ~/server、ps -ef。"
                 "只有 op_whitelist 里的管理员能用。"
                 "禁止使用管道、重定向、分号、rm、kill、reboot、sudo、curl 等危险写法，"

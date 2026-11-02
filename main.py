@@ -18,10 +18,20 @@ main.py —— Minecraft 服务器智能管家 · 程序入口
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools import get_bot_name, get_permissions, get_trigger, load_config
+from tools import (
+    READ_MODE_LOCAL,
+    get_bot_name,
+    get_log_path,
+    get_permissions,
+    get_read_mode,
+    get_trigger,
+    load_config,
+)
 
 LOG = logging.getLogger("main")
 
@@ -94,11 +104,26 @@ def _validate_config(cfg: Dict[str, Any]) -> List[str]:
         problems.append("deepseek_api_key 还没填，AI 决策会失败（玩家会收到“大脑没接上线”）")
 
     ssh_cfg = cfg.get("ssh") or {}
-    for field in ("host", "port", "username", "password", "remote_log_path"):
-        if not ssh_cfg.get(field):
-            problems.append(f"ssh.{field} 未配置")
-    if _is_placeholder(ssh_cfg.get("password")):
-        problems.append("ssh.password 还没填，日志监听会连接失败")
+    mode = get_read_mode(cfg)
+    raw_mode = str(cfg.get("read_mode") or "").strip().lower()
+    if raw_mode not in ("", "ssh", "remote", "local", "本地", "本机"):
+        problems.append(f"read_mode 只能填 \"local\" 或 \"ssh\"，当前是 {raw_mode!r}（已按 ssh 处理）")
+
+    if mode == READ_MODE_LOCAL:
+        # 本地模式完全不碰 SSH：只关心日志文件在不在
+        log_path = get_log_path(cfg)
+        if not log_path:
+            problems.append("local 模式需要填写 local_log_path（本机日志文件路径）")
+        else:
+            resolved = Path(os.path.expandvars(os.path.expanduser(log_path)))
+            if not resolved.exists():
+                problems.append(f"本地日志文件暂不存在：{resolved}（服务器启动出日志后会自动接上）")
+    else:
+        for field in ("host", "port", "username", "password", "remote_log_path"):
+            if not ssh_cfg.get(field):
+                problems.append(f"ssh.{field} 未配置")
+        if _is_placeholder(ssh_cfg.get("password")):
+            problems.append("ssh.password 还没填，日志监听会连接失败")
 
     rcon_cfg = cfg.get("rcon") or {}
     for field in ("host", "port", "password"):
@@ -133,11 +158,21 @@ def _print_summary(cfg: Dict[str, Any]) -> None:
     print(f"  触发词         : {get_trigger(cfg)}")
     print(f"  AI 密钥        : {_mask(cfg.get('deepseek_api_key'))}")
     print(f"  AI 模型        : {cfg.get('deepseek_model') or '(默认)'}")
-    print(f"  SSH            : {ssh_cfg.get('username')}@{ssh_cfg.get('host')}:{ssh_cfg.get('port')}"
-          f"  密码={_mask(ssh_cfg.get('password'))}")
-    print(f"  远端日志       : {ssh_cfg.get('remote_log_path')}")
-    print(f"  RCON           : {rcon_cfg.get('host')}:{rcon_cfg.get('port')}"
-          f"  密码={_mask(rcon_cfg.get('password'))}")
+
+    mode = get_read_mode(cfg)
+    if mode == READ_MODE_LOCAL:
+        print("  运行模式       : local（本机读日志 / 本机执行命令，不加载 paramiko）")
+        print(f"  监听日志       : {get_log_path(cfg)}")
+        print(f"  RCON           : {rcon_cfg.get('host')}:{rcon_cfg.get('port')}"
+              f"  密码={_mask(rcon_cfg.get('password'))}")
+    else:
+        print("  运行模式       : ssh（远端读日志 / 远端执行命令）")
+        print(f"  SSH            : {ssh_cfg.get('username')}@{ssh_cfg.get('host')}:{ssh_cfg.get('port')}"
+              f"  密码={_mask(ssh_cfg.get('password'))}")
+        print(f"  远端日志       : {get_log_path(cfg)}")
+        print(f"  RCON           : {rcon_cfg.get('host')}:{rcon_cfg.get('port')}"
+              f"  密码={_mask(rcon_cfg.get('password'))}")
+
     print(f"  OP 白名单      : {op_list}")
     print(f"  玩家可用指令   : {allow_list}")
     print(f"  绝对禁止       : {block_list}")
@@ -183,7 +218,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     bot_name = get_bot_name(cfg)
     try:
-        print(f"[启动] 正在连上远端主机监听服务器日志，等待玩家呼唤 {get_trigger(cfg)} ……")
+        if get_read_mode(cfg) == READ_MODE_LOCAL:
+            print(f"[启动] 正在监听本机日志文件，等待玩家呼唤 {get_trigger(cfg)} ……")
+        else:
+            print(f"[启动] 正在连上远端主机监听服务器日志，等待玩家呼唤 {get_trigger(cfg)} ……")
         print("[提示] 按 Ctrl+C 可以优雅退出。\n")
         start_watch(cfg)
     except KeyboardInterrupt:

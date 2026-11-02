@@ -7,7 +7,10 @@ tools.py —— 工具执行器与硬编码安全层
    生成一份）读取参数；
 2. 对外提供两个工具函数 execute_rcon() / execute_ssh()，供 agent_core 动态调用；
 3. 在执行前做“绝对黑名单硬拦截 + 玩家权限校验”（纵深防御，不依赖 AI 的自觉）；
-4. 提供 send_tellraw() / say()，把结果用游戏内聊天消息的方式反馈给玩家。
+4. 提供 send_tellraw() / say()，把结果用游戏内聊天消息的方式反馈给玩家；
+5. 支持双运行模式（config.json 的 read_mode）：
+   - "local"：execute_ssh() 直接用 subprocess 在本机跑命令，全程不碰网络、不加载 paramiko；
+   - "ssh"  ：才按需 import paramiko 建立连接，在远端主机上执行。
 
 安全设计原则（非常重要）：
 - AI 只是“提议者”，真正的执行闸门在 Python 这一层；
@@ -26,19 +29,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# paramiko 只在 execute_ssh 里用到：缺失时给出友好提示，而不是让整个程序起不来
-try:
-    import paramiko
-except ImportError:  # pragma: no cover
-    paramiko = None  # type: ignore[assignment]
+# ！！刻意不在顶层 import paramiko ！！
+# 本地模式（read_mode = "local"）下整个进程都不应该把它拉进内存：
+# 只有在真的要建立 SSH 连接时，才由 load_paramiko() 按需导入。
 
-# mcrcon 同理
+# mcrcon 两种模式都要用（RCON 始终走网络），正常导入即可
 try:
     from mcrcon import MCRcon
 except ImportError:  # pragma: no cover
@@ -56,6 +59,15 @@ WHITESPACE_PATTERN = re.compile(r"\s+")
 
 DEFAULT_BOT_NAME = "MC管家"     # 仅当 config.json 里 bot_name / trigger_keyword 都缺失时使用
 
+# 运行模式：决定日志怎么读、系统命令在哪里执行
+READ_MODE_SSH = "ssh"       # 连远端主机：paramiko + tail -F / exec_command
+READ_MODE_LOCAL = "local"   # 就在本机：open() 读文件 / subprocess 跑命令，完全不加载 paramiko
+READ_MODES = (READ_MODE_SSH, READ_MODE_LOCAL)
+_READ_MODE_ALIASES = {      # 容忍几种常见写法
+    "ssh": READ_MODE_SSH, "remote": READ_MODE_SSH,
+    "local": READ_MODE_LOCAL, "本地": READ_MODE_LOCAL, "本机": READ_MODE_LOCAL,
+}
+
 # runtime 段的默认值：config.json 里缺哪一项就用哪一项
 RUNTIME_DEFAULTS: Dict[str, Any] = {
     "max_tool_rounds": 3,          # 单条消息最多几轮“思考 → 调工具”
@@ -71,6 +83,7 @@ RUNTIME_DEFAULTS: Dict[str, Any] = {
     "tail_channel_timeout": 1.0,   # tail 通道读超时，决定 Ctrl+C 响应速度
     "reconnect_delay": 5.0,        # 断线重连间隔（秒）
     "dedupe_window": 3.0,          # 重复日志行去重时间窗（秒）
+    "local_poll_interval": 0.3,    # 本地模式轮询日志文件的间隔（秒）
 }
 
 # 配置缓存（避免每收到一条聊天就重复读盘）
@@ -160,6 +173,62 @@ def get_runtime(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         log.warning("config.json 的 runtime 段必须是对象，已全部使用默认值")
 
     return merged
+
+
+def get_read_mode(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """
+    读取 read_mode：决定日志监听与系统命令执行的形态。
+
+    - "ssh"  ：连远端主机（paramiko + tail -F / exec_command）
+    - "local"：就在本机（open() 读日志 / subprocess 跑命令）
+
+    缺省或写错时一律回退 "ssh"，保证不填 read_mode 的旧配置行为完全不变。
+    """
+    cfg = cfg if cfg is not None else load_config()
+    raw = cfg.get("read_mode")
+    text = str(raw).strip().lower() if raw is not None else ""
+    if not text:
+        return READ_MODE_SSH
+
+    mode = _READ_MODE_ALIASES.get(text, text)
+    if mode not in READ_MODES:
+        log.warning("read_mode 只能是 \"ssh\" 或 \"local\"，收到 %r，已按 ssh 处理", raw)
+        return READ_MODE_SSH
+    return mode
+
+
+def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """
+    取要监听的日志路径（两种模式共用同一套解析规则）：
+
+    - local 模式：优先 local_log_path，退而用 ssh.remote_log_path（兼容只配了一处的人）；
+    - ssh 模式  ：用 ssh.remote_log_path（远端主机上的路径）。
+    """
+    cfg = cfg if cfg is not None else load_config()
+    ssh_cfg = cfg.get("ssh") or {}
+
+    if get_read_mode(cfg) == READ_MODE_LOCAL:
+        path = cfg.get("local_log_path") or ssh_cfg.get("remote_log_path")
+    else:
+        path = ssh_cfg.get("remote_log_path")
+    return str(path or "").strip()
+
+
+def load_paramiko() -> Any:
+    """
+    按需导入 paramiko —— 这是“极致按需加载”的核心：
+
+    - 本地模式的整条链路（logger 读文件、execute_ssh 跑 subprocess）都不会调用它，
+      所以 `import paramiko` 永远不会执行，进程里也不会出现这个模块；
+    - 只有 ssh 模式真的要建连接时才走到这里，缺依赖时给出可操作的提示。
+    """
+    try:
+        import paramiko  # noqa: PLC0415  —— 函数内导入是刻意为之
+    except ImportError:  # pragma: no cover
+        raise RuntimeError(
+            "当前是 ssh 模式，但没有安装 paramiko。请先执行：pip install -r requirements.txt"
+        ) from None
+    return paramiko
 
 
 def get_bot_name(cfg: Optional[Dict[str, Any]] = None) -> str:
@@ -498,9 +567,104 @@ def _clean_shell_output(text: str, limit: int) -> str:
     return result
 
 
+def _run_local_command(command: str, timeout: int) -> Tuple[int, str, str]:
+    """
+    local 模式：直接用 subprocess 在本机执行，**完全绕开 SSH / 网络**。
+
+    - shell=True：命令按本机默认 shell 解释（Linux/macOS 是 sh，Windows 是 cmd）；
+    - stdin=DEVNULL：不给交互输入，避免命令卡在等密码 / 等确认；
+    - 超时会强杀子进程，不会把监听线程一起拖死。
+
+    :return: (退出码, 标准输出, 标准错误)
+    :raises RuntimeError: 超时 / 无法启动子进程
+    """
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"命令执行超过 {timeout} 秒，已强制结束") from None
+    except OSError as exc:
+        raise RuntimeError(f"无法启动本机子进程：{exc}") from None
+
+    return int(completed.returncode), completed.stdout or "", completed.stderr or ""
+
+
+def _run_ssh_command(
+    command: str,
+    runtime: Dict[str, Any],
+    ssh_cfg: Dict[str, Any],
+) -> Tuple[int, str, str]:
+    """
+    ssh 模式：按需导入 paramiko，连上远端主机执行一条命令，用完立刻断开。
+
+    :return: (退出码, 标准输出, 标准错误)
+    :raises RuntimeError: 未装 paramiko / 连接信息缺失 / 连接或执行失败
+    """
+    paramiko = load_paramiko()          # ← 只有走到这里，paramiko 才会被 import
+
+    host = str(ssh_cfg.get("host") or "").strip()
+    username = str(ssh_cfg.get("username") or "").strip()
+    password = str(ssh_cfg.get("password") or "")
+    try:
+        port = int(ssh_cfg.get("port") or 22)
+    except (TypeError, ValueError):
+        port = 22
+    if not host or not username:
+        raise RuntimeError("config.json 里的 ssh.host / ssh.username 没有配置")
+
+    connect_timeout = int(runtime["ssh_connect_timeout"])
+    command_timeout = int(runtime["ssh_command_timeout"])
+
+    client = None
+    try:
+        client = paramiko.SSHClient()
+        # 内网一次性信任主机指纹；要更严格可换成 load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=connect_timeout,
+            banner_timeout=connect_timeout,
+            auth_timeout=connect_timeout,
+            look_for_keys=False,   # 强制走密码认证，不受本机密钥干扰
+            allow_agent=False,
+        )
+        _stdin, stdout, stderr = client.exec_command(command, timeout=command_timeout)
+        out_text = stdout.read().decode("utf-8", "replace")
+        err_text = stderr.read().decode("utf-8", "replace")
+        exit_code = int(stdout.channel.recv_exit_status())
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"SSH 连接或执行失败：{type(exc).__name__}: {exc}") from None
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    return exit_code, out_text, err_text
+
+
 def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
     """
-    在服务器所在的主机上执行一条只读 shell 命令（查看进程、磁盘、内存等）。
+    在“服务器所在的主机”上执行一条只读 shell 命令（查看进程、磁盘、内存等）。
+
+    执行位置由 config.json 的 read_mode 决定：
+    - local：本机 subprocess 执行，不联网、不加载 paramiko；
+    - ssh  ：按需加载 paramiko 连远端主机执行。
+    两道安全闸门（权限 + 黑名单）两种模式完全一致。
 
     :param command:  要执行的 shell 命令，例如 "du -sh ~/server"、"df -h"
     :param feedback: 执行成功后给玩家看的一句中文提示
@@ -544,52 +708,28 @@ def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
         say(player, "这条命令看起来有破坏性，我不执行。", "red")
         return f"拦截：SSH 命令包含危险片段「{hit}」，已拒绝执行。"
 
-    if paramiko is None:
-        return "错误：未安装 paramiko，请先执行：pip install -r requirements.txt"
+    # ---- 闸门 3：执行。local 走 subprocess，ssh 才按需 import paramiko ----
+    mode = get_read_mode(cfg)
+    is_local = mode == READ_MODE_LOCAL
+    where = "本机" if is_local else "远端主机"
 
-    host = str(ssh_cfg.get("host") or "").strip()
-    username = str(ssh_cfg.get("username") or "").strip()
-    password = str(ssh_cfg.get("password") or "")
     try:
-        port = int(ssh_cfg.get("port") or 22)
-    except (TypeError, ValueError):
-        port = 22
-    if not host or not username:
-        return "错误：config.json 里的 ssh.host / ssh.username 没有配置"
+        if is_local:
+            log.info("【本机执行】玩家=%s 命令=%s", player, raw)
+            exit_code, out_text, err_text = _run_local_command(raw, int(runtime["ssh_command_timeout"]))
+        else:
+            log.info("【SSH 执行】玩家=%s 命令=%s", player, raw)
+            exit_code, out_text, err_text = _run_ssh_command(raw, runtime, ssh_cfg)
+    except RuntimeError as exc:            # 已有可读中文说明的失败
+        log.error("%s执行失败（%s）：%s", where, raw[:80], exc)
+        say(player, "命令没执行成功，具体原因我记到控制台了。", "red")
+        return f"{where}执行失败：{exc}"
+    except Exception as exc:               # 兜底：任何没预料到的异常都不许冒到 AI 循环里
+        log.error("%s执行失败（%s）：%s: %s", where, raw[:80], type(exc).__name__, exc)
+        say(player, "命令没执行成功。" if is_local else "主机连不上，命令没执行。", "red")
+        return f"{where}执行失败：{type(exc).__name__}: {exc}"
 
-    connect_timeout = int(runtime["ssh_connect_timeout"])
-    client = None
-    try:
-        client = paramiko.SSHClient()
-        # 内网一次性信任主机指纹；要更严格可换成 load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=host,
-            port=port,
-            username=username,
-            password=password,
-            timeout=connect_timeout,
-            banner_timeout=connect_timeout,
-            auth_timeout=connect_timeout,
-            look_for_keys=False,   # 强制走密码认证，不受本机密钥干扰
-            allow_agent=False,
-        )
-        _stdin, stdout, stderr = client.exec_command(raw, timeout=int(runtime["ssh_command_timeout"]))
-        out_text = stdout.read().decode("utf-8", "replace")
-        err_text = stderr.read().decode("utf-8", "replace")
-        exit_code = stdout.channel.recv_exit_status()
-    except Exception as exc:
-        log.error("SSH 执行失败（%s）：%s: %s", raw[:80], type(exc).__name__, exc)
-        say(player, "主机连不上，命令没执行。", "red")
-        return f"SSH 执行失败：{type(exc).__name__}: {exc}"
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
-
-    log.info("【SSH 成功】玩家=%s 命令=%s 退出码=%s", player, raw, exit_code)
+    log.info("【%s 成功】玩家=%s 命令=%s 退出码=%s", "本机" if is_local else "SSH", player, raw, exit_code)
 
     limit = int(runtime["ssh_output_max_chars"])
     output = _clean_shell_output(out_text, limit)
@@ -598,7 +738,7 @@ def execute_ssh(command: str, feedback: str = "", player: str = "") -> str:
     note = _one_line(feedback, 60)
     say(player, note or "主机命令已执行。", "green" if exit_code == 0 else "yellow")
 
-    pieces = [f"SSH 执行完成，退出码 {exit_code}。"]
+    pieces = [f"命令执行完成（{where}），退出码 {exit_code}。"]
     if output:
         pieces.append(f"标准输出：\n{output}")
     if error_output:

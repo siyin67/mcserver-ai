@@ -2,6 +2,9 @@
     "bot_name": "大肥鱼",
     "trigger_keyword": "@大肥鱼",
 
+    "read_mode": "ssh",
+    "local_log_path": "~/minecraft/logs/latest.log",
+
     "deepseek_api_key": "sk-在这里填入你的DeepSeek密钥",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_model": "deepseek-chat",
@@ -39,6 +42,7 @@
         "ssh_command_timeout": 20,
         "tail_channel_timeout": 1.0,
         "reconnect_delay": 5.0,
-        "dedupe_window": 3.0
+        "dedupe_window": 3.0,
+        "local_poll_interval": 0.3
     }
 }

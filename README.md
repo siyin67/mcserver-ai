@@ -12,18 +12,19 @@
 | 是 | 不是 |
 | --- | --- |
 | 一个 **本地运行** 的 Python 脚本，数据只经过你自己的电脑和 AI 接口 | 不是网易/微软的插件，服务器 **不需要装任何 mod** |
-| 一个 **日志驱动** 的管家：靠 `tail -F latest.log` 读聊天，靠 RCON 执行 | 不是实时 tick 级插件，没有游戏内 UI，命令执行有秒级延迟 |
+| 一个 **日志驱动** 的管家：靠读 `latest.log`（本机文件或 SSH 远端）拿聊天，靠 RCON 执行 | 不是实时 tick 级插件，没有游戏内 UI，命令执行有秒级延迟 |
 | 一个 **权限可控** 的值班机器人：谁能让它干什么，全写在配置文件里 | 不是「全权 AI」：危险指令在 Python 层就被钉死，模型没有绕过余地 |
 
 ---
 
 ## 特性
 
-- **零侵入**：只要你的服务器开了 RCON、且日志能通过 SSH 读到，就能用；纯服务端、原版/插件服/模组服都行。
+- **双模式运行**：`read_mode` 二选一——`local`（管家和服务器在同一台机器：直接读日志文件、直接跑本机命令）或 `ssh`（管家在另一台机器：走 SSH 读日志、跑远端命令）。本地模式**完全不加载 paramiko**。
+- **零侵入**：只要你的服务器开了 RCON、日志文件可读（本机直读，或远端 SSH 读），就能用；纯服务端、原版/插件服/模组服都行。
 - **真正的安全闸门**：黑名单 + 权限矩阵写在 Python 里，AI 只负责「提议」，不负责「放行」。
 - **不烧 token**：命中黑名单的请求在调用 AI 之前就被拦掉，一个 token 都不花。
 - **可插拔工具**：内置 `execute_rcon`（服务器指令）与 `execute_ssh`（只读主机状态）两个工具，加新工具只需注册一个函数。
-- **断线自愈**：SSH 掉线自动重连，单条消息异常不会带崩监听循环，日志轮转的重复行自动去重。
+- **断线自愈**：SSH 掉线自动重连；本地模式下日志文件被删 / 轮转 / 截断也能自动跟上；单条消息异常不会带崩监听循环。
 - **配置与代码完全分离**：超时、长度上限、采样温度、机器人名字、触发词全在 `config.json`，代码里没有魔数。
 - **零个人配置入库**：仓库只带 `config.example.json`，真实配置被 `.gitignore` 挡在外面。
 
@@ -38,8 +39,8 @@
                                        │  写入 latest.log
                                        ▼
   ┌────────────────────────────────────────────────────────────┐
-  │ logger.py                                                  │
-  │   SSH + tail -F  ──►  正则 <玩家名> 消息  ──►  触发词匹配     │
+  │ logger.py（local: open+seek 模拟 tail -F ／ ssh: 远端 tail -F）│
+  │   读日志 ──► 正则 <玩家名> 消息 ──► 触发词匹配                │
   └───────────────────────────────┬────────────────────────────┘
                                   │  player, request
                                   ▼
@@ -73,8 +74,8 @@
 .
 ├── main.py              # 入口：控制台编码、日志格式、配置体检、启动监听
 ├── agent_core.py        # AI 决策：客户端、工具 schema、System Prompt、tool_calls 循环
-├── logger.py            # SSH 监听：tail -F 日志、正则匹配、触发词识别、断线重连
-├── tools.py             # 执行层：配置读取、黑名单、权限矩阵、RCON / SSH 工具
+├── logger.py            # 日志监听：local 直读文件 / ssh 远端 tail -F（按需加载 paramiko）
+├── tools.py             # 执行层：配置读取、黑名单、权限矩阵、RCON / SSH(本机 subprocess) 工具
 ├── config.example.json  # 配置模板（真实配置 config.json 不入库）
 ├── requirements.txt     # 三个依赖：mcrcon / openai / paramiko
 ├── .gitignore
@@ -88,6 +89,7 @@
 - Python **3.9+**（开发与验证环境为 3.11）
 - 一个开了 **RCON** 的 Minecraft 服务端（Java 版，`server.properties` 里 `enable-rcon=true`）
 - 一个能用 **SSH 密码登录**、且能 `tail` 到服务器日志的远端主机（云服务器 / 树莓派 / 甚至 Android 手机上的 Termux 都行）
+  —— **`read_mode: "local"` 时不需要**：管家直接在本机读日志文件、跑本机命令
 - 一个兼容 OpenAI 协议的 API Key（默认走 DeepSeek：`https://api.deepseek.com`）
 
 ---
@@ -101,8 +103,10 @@ pip install -r requirements.txt
 # 2. 生成自己的配置（首次运行 main.py 也会自动生成）
 cp config.example.json config.json
 
-# 3. 填三处必填项：deepseek_api_key / ssh.password / rcon.password
-#    顺便把 ssh.host、rcon.host、op_whitelist 改成你自己的
+# 3. 选运行模式：read_mode 填 "local"（管家与服务器同机）或 "ssh"（管家在另一台机器）
+#    再填必填项：deepseek_api_key / rcon.password
+#    ssh 模式额外填 ssh.password；local 模式额外填 local_log_path
+#    顺便把 rcon.host、op_whitelist 改成你自己的
 
 # 4. 先做一次「体检」再启动（会打印脱敏后的配置摘要和问题清单）
 python main.py
@@ -119,6 +123,36 @@ python logger.py
 
 ---
 
+## 两种运行模式
+
+`read_mode` 决定管家**从哪读日志**、**在哪执行命令**，其余逻辑完全共用：
+
+| | `local` | `ssh` |
+| --- | --- | --- |
+| 适用场景 | 管家和 Minecraft 服务端在同一台机器 | 管家在你的电脑 / 另一台服务器，Minecraft 在远端 |
+| 日志来源 | `local_log_path` 指向的本机文件，用 `open()` + `seek()` 模拟 `tail -F` | 通过 SSH 执行 `tail -F -n 0 <ssh.remote_log_path>` |
+| 命令执行 | 本机 `subprocess.run(shell=True)` | SSH 连过去执行 |
+| paramiko | **完全不加载**（顶层零 import） | 进入 ssh 分支时才 `import paramiko` |
+| 额外必填 | `local_log_path` | `ssh.host / port / username / password / remote_log_path` |
+
+```jsonc
+// 与服务器同机：少一跳网络，日志零延迟，也不怕 SSH 断线
+"read_mode": "local",
+"local_log_path": "~/minecraft/logs/latest.log"
+
+// 管家在另一台机器
+"read_mode": "ssh",
+"ssh": { "host": "192.168.1.10", "port": 22, "username": "mcserver",
+         "password": "……", "remote_log_path": "~/minecraft/logs/latest.log" }
+```
+
+本地模式怎么做到「不断线的 tail -F」：每 `local_poll_interval` 秒 `os.stat` 一次，
+用 `(st_dev, st_ino)` 判断文件是否被轮转（是则从头读新文件），
+用 `st_size < 当前读取位置` 判断是否被截断（是则 `seek(0)` 重读），
+文件暂时不存在就安静地等它出现——服务器重启时不会刷一屏报错。
+
+---
+
 ## 配置说明
 
 <details open>
@@ -128,12 +162,14 @@ python logger.py
 | --- | --- | --- |
 | `bot_name` | string | 机器人名字，用于游戏内消息前缀 `[名字] ` |
 | `trigger_keyword` | string | 触发词，玩家消息里包含它才会唤醒管家，如 `@大肥鱼` |
+| `read_mode` | string | 运行模式：`"local"`（管家与服务器同机）或 `"ssh"`（管家在另一台机器），默认 `"ssh"` |
+| `local_log_path` | string | **仅 local 模式**：本机日志文件路径，如 `~/minecraft/logs/latest.log` |
 | `deepseek_api_key` | string | API 密钥，必须以 `sk-` 开头 |
 | `deepseek_base_url` | string | OpenAI 兼容接口地址，默认 `https://api.deepseek.com` |
 | `deepseek_model` | string | 模型名，默认 `deepseek-chat` |
-| `ssh.host` / `ssh.port` | string / int | 日志所在主机的地址与 SSH 端口 |
-| `ssh.username` / `ssh.password` | string | SSH 账号（密码认证，不支持密钥文件） |
-| `ssh.remote_log_path` | string | 远端日志路径，如 `~/minecraft/logs/latest.log` |
+| `ssh.host` / `ssh.port` | string / int | **仅 ssh 模式**：日志所在主机的地址与 SSH 端口 |
+| `ssh.username` / `ssh.password` | string | **仅 ssh 模式**：SSH 账号（密码认证，不支持密钥文件） |
+| `ssh.remote_log_path` | string | **仅 ssh 模式**：远端日志路径，如 `~/minecraft/logs/latest.log` |
 | `rcon.host` / `rcon.port` | string / int | Minecraft RCON 地址与端口（默认 25575） |
 | `rcon.password` | string | RCON 密码，与 `server.properties` 的 `rcon.password` 一致 |
 | `permissions.op_whitelist` | string[] | 管理员名单：拥有全部权限，且唯一能调用 SSH 工具 |
@@ -158,6 +194,7 @@ python logger.py
 | `tail_channel_timeout` | 1.0 | tail 通道读超时，越小 Ctrl+C 响应越快 |
 | `reconnect_delay` | 5.0 | 断线重连间隔（秒） |
 | `dedupe_window` | 3.0 | 重复日志行去重时间窗（秒） |
+| `local_poll_interval` | 0.3 | local 模式轮询日志文件的间隔（秒），越小越实时、越费 CPU |
 
 </details>
 
@@ -166,6 +203,7 @@ python logger.py
 ## 安全模型：三道闸门
 
 这是本项目最重要的部分。大模型会被玩家用话术诱导，所以**所有授权判断都不在模型手里**。
+下面三道闸门在 `local` 与 `ssh` 两种模式下**完全一致**，唯一区别只是命令最终落在哪台机器上。
 
 ### 闸门 1 · AI 之前的前置拦截
 玩家消息里只要出现绝对黑名单词（`stop` / `op` / `ban` / `kill @a` …），
@@ -180,13 +218,14 @@ python logger.py
 - 玩家名必须匹配 `^[A-Za-z0-9_]{1,16}$`，否则连 `tellraw` 的目标都不给它拼（挡注入）；
 - **玩家身份不进 tool schema**，由程序注入，模型无法把普通玩家「描述」成管理员；
 - SSH 命令额外禁止 `rm` / `sudo` / `reboot` 等词，以及 `; | & > $() ` 等 shell 语法；
-- 日志路径也做注入检查，`remote_log_path` 里有 `;` 直接报错拒绝启动。
+  **local 模式下这条同样生效**——命令直接落在本机 shell 上，风险只会更大；
+- 日志路径也做注入检查：`remote_log_path` 里有 `;` 直接报错拒绝启动，`local_log_path` 则拒绝控制字符。
 
 ### 已知边界（请务必知道）
 
 - **AI 仍然可能执行「合法但你不想要」的指令**，例如 `gamerule keepInventory true`。
   不想要就把它写进 `absolute_block`，或在 `normal_player_allow` 里收紧。
-- SSH 工具的能力等于**该账号在主机上的权限**，只给管理员开放，且默认只放行只读命令。
+- SSH 工具的能力等于**该账号在主机上的权限**（local 模式下就是**你运行脚本那个账号**的权限），只给管理员开放，且默认只放行只读命令。
 - 建议 **不要** 用 root 跑这个脚本，也不要给它 `sudo` 免密。
 
 ---
@@ -243,8 +282,9 @@ User=mcbot
 WantedBy=multi-user.target
 ```
 
-**Android（Termux）**：`pkg install python openssh` 后照常 `pip install -r requirements.txt`；
-手机端只需保证 SSH 服务可连，脚本本身建议跑在更稳的机器上。
+**Android（Termux）**：`pkg install python openssh` 后照常 `pip install -r requirements.txt`。
+如果 Termux 里跑的就是服务端本身，把 `read_mode` 设成 `"local"`、`local_log_path` 指向手机上的日志，
+连 SSH 都不用开；管家在别的机器上时则用 `ssh` 模式，手机端只需保证 SSH 服务可连。
 
 > 提示：一个 `config.json` 对应一套服务器。多服务器就复制几份目录，用不同的 `config.json` 跑多个进程。
 
@@ -276,7 +316,15 @@ API Key 没填或格式不对（必须以 `sk-` 开头），或余额/额度不�
 <details>
 <summary><b>提示「主机连不上」</b></summary>
 
-SSH 密码认证可能被 `sshd_config` 关掉了（`PasswordAuthentication yes`），或端口不对。
+只会在 `read_mode: "ssh"` 下出现：SSH 密码认证可能被 `sshd_config` 关掉了（`PasswordAuthentication yes`），或端口不对。
+如果你本来就和服务器同机，把 `read_mode` 改成 `"local"` 就彻底没有这个环节了。
+</details>
+
+<details>
+<summary><b>没有 paramiko 也能跑吗？</b></summary>
+
+可以。`read_mode: "local"` 时全程不加载 paramiko，`pip install mcrcon openai` 就够了；
+切到 `ssh` 模式才会在真正用到的那一刻 import，缺依赖时程序会提示你装。
 </details>
 
 <details>
@@ -290,7 +338,7 @@ SSH 密码认证可能被 `sshd_config` 关掉了（`PasswordAuthentication yes`
 ## 免责声明
 
 本项目会**代替玩家在服务器上执行指令**。请自行评估风险：
-先用 `op_whitelist` 圈定可信玩家、用 `absolute_block` 钉死危险操作、并对 SSH 账号做最小权限。
+先用 `op_whitelist` 圈定可信玩家、用 `absolute_block` 钉死危险操作、并对运行脚本的账号（SSH 账号或本机账号）做最小权限。
 因配置不当造成的存档损坏、财产损失，作者不承担责任。
 
 ## License
