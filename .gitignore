@@ -15,6 +15,9 @@ config.local.json
 memory.json
 memory.json.tmp
 *.memory.json
+# Docker bind 挂载的数据目录（./data 里就是 memory.json）
+/data/
+data/*.json
 
 # ---------------------------------------------------------------
 # Python

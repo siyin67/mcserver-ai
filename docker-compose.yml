@@ -37,19 +37,23 @@ services:
 
     # ------------------------------------------------------------
     # 默认挂载（开箱即用）：
-    #   mc-data:/data —— 长期记忆落在这里。容器重建、升级镜像都不丢记忆。
+    #   ./data:/data —— 长期记忆落在宿主机 data/ 目录里，容器重建、升级镜像都不丢，
+    #   而且可以直接用编辑器打开 ./data/memory.json 修改、备份、比 diff。
+    #   首次使用务必先建目录并交给容器内的用户（默认 uid 1000）：
+    #       mkdir -p ./data && sudo chown -R 1000:1000 ./data
     #   路径由 docker/entrypoint.py 在启动时自动指到 /data/memory.json，
     #   不需要你写任何环境变量。
+    #
+    # 想改用 Docker 命名卷（不用管属主，但文件藏在 /var/lib/docker 里、要 root 才能碰）：
+    #   把下面 `- ./data:/data` 换成 `- mc-data:/data`，并取消文件末尾 volumes 段的注释。
     #
     # 其他可选挂载：
     #   local 模式必须挂日志目录（只读），并把 MC_LOCAL_LOG_PATH 指向容器内路径
     #   想用整份手写配置代替环境变量时，再挂 config.json（文件必须已存在！）
-    #
-    # 想直接用宿主机目录存记忆，把下面那行换成：
-    #   - ./data:/data        # 记得先在宿主机 chown 成容器 uid（默认 1000）
     # ------------------------------------------------------------
     volumes:
-      - mc-data:/data
+      - ./data:/data
+      # - mc-data:/data                   # 命名卷备选，需配合文件末尾的 volumes 段
       # - ${MC_LOG_DIR:-./logs}:/logs:ro
       # - ./config.json:/app/config.json:ro
 
@@ -71,11 +75,11 @@ services:
         max-file: "3"
 
 # ------------------------------------------------------------
-# 命名卷：长期记忆（memory.json）存在这里，容器重建 / 镜像升级都不丢。
-# 备份：docker run --rm -v mc-data:/data -v "$PWD":/backup busybox \
-#         tar czf /backup/memory-backup.tgz -C /data .
-# 恢复：docker run --rm -v mc-data:/data -v "$PWD":/backup busybox \
-#         tar xzf /backup/memory-backup.tgz -C /data
+# 默认用宿主机目录 ./data 存长期记忆（见上方 volumes），这里不需要命名卷。
+# 如果你改用了 `- mc-data:/data`，把下面两行的注释去掉即可。
+# 备份 / 恢复（bind 目录更省事）：
+#   tar czf memory-backup.tgz -C ./data .
+#   tar xzf memory-backup.tgz -C ./data
 # ------------------------------------------------------------
-volumes:
-  mc-data:
+# volumes:
+#   mc-data:

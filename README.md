@@ -248,7 +248,7 @@ python logger.py
 
 ## 长期记忆：`memory.json`
 
-管家会给每位玩家存一份小档案，默认写在项目目录下的 `memory.json`（**已被 `.gitignore` 挡住**——里面有玩家的原话）。用 Docker 跑时不用管路径：compose 的 `mc-data` 卷会让 entrypoint 自动改写到 `/data/memory.json`，容器重建、升级镜像都不会丢。
+管家会给每位玩家存一份小档案，默认写在项目目录下的 `memory.json`（**已被 `.gitignore` 挡住**——里面有玩家的原话）。用 Docker 跑时不用管路径：compose 把宿主机 `./data` 挂到容器 `/data`，entrypoint 会自动把记忆写到 `/data/memory.json`，容器重建、升级镜像都不会丢；宿主机上就是 `./data/memory.json` 这个普通文件，可以直接编辑。
 
 ```json
 {
@@ -345,8 +345,9 @@ docker compose logs -f
 | 健康检查 | 每 30 秒 TCP 探活 RCON（ssh 模式再加 SSH）；只是提示，不会自动重启 |
 | 更新 | `git pull && docker compose up -d --build` |
 | 配置从哪来 | `config.json` 每次重建容器都会按 `.env` 重新生成——所以 **`.env` 才是唯一真相**，别在容器里手改 |
-| 长期记忆 | **默认就持久化**：compose 挂了命名卷 `mc-data:/data`，entrypoint 启动时自动把记忆写到 `/data/memory.json`，重建容器、升级镜像都不会丢，不用配任何变量。想改用宿主机目录就换成 `- ./data:/data`，并先 `chown 1000:1000 ./data` |
-| 备份 / 恢复记忆 | `docker run --rm -v mc-data:/data -v "$PWD":/backup busybox tar czf /backup/memory.tgz -C /data .`（恢复把 `czf` 改成 `xzf`） |
+| 长期记忆 | **默认就持久化**：compose 把宿主机 `./data` 挂到容器的 `/data`，entrypoint 启动时自动把记忆写到 `/data/memory.json`，重建容器、升级镜像都不会丢，不用配任何变量。首次启动前记得 `mkdir -p ./data && sudo chown -R 1000:1000 ./data`。想换成命名卷：把 `- ./data:/data` 改成 `- mc-data:/data`，并取消文件末尾 `volumes:` 的注释 |
+| 查看 / 修改记忆 | 宿主机上直接编辑 `./data/memory.json`（就是普通文件，`nano`、VS Code Remote-SSH 都行），改完不用重启 |
+| 备份 / 恢复记忆 | `tar czf memory-backup.tgz -C ./data .`（恢复 `tar xzf memory-backup.tgz -C ./data`） |
 | 不想留聊天记录 | `.env` 里 `MC_MEMORY_ENABLED=false`，完全不落盘任何对话 |
 | 非 root | 容器默认用 uid/gid 1000 运行；挂载宿主机日志时用 `MC_UID` / `MC_GID` 对齐文件属主 |
 | 国内网络慢 | 在 `.env` 里取消 `APT_MIRROR` / `PIP_INDEX_URL` 两行注释，重建镜像时自动换源；不用改 `Dockerfile`（改了反而会和 `git pull` 冲突） |
