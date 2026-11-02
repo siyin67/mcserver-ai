@@ -50,7 +50,10 @@ except ImportError:  # pragma: no cover
 log = logging.getLogger("tools")
 
 # ---------------------------------------------------------------- 路径与常量
-CONFIG_PATH = Path(__file__).resolve().with_name("config.json")
+# 配置文件默认与代码同目录；容器里可以用 MC_CONFIG_PATH 指到挂载点（如 /data/config.json）
+CONFIG_PATH = Path(
+    os.environ.get("MC_CONFIG_PATH") or Path(__file__).resolve().with_name("config.json")
+).expanduser()
 EXAMPLE_CONFIG_PATH = Path(__file__).resolve().with_name("config.example.json")
 
 PLAYER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,16}$")   # Java 版玩家名规则

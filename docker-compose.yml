@@ -1,0 +1,59 @@
+# ================================================================
+# mcserver-ai · docker compose
+# ================================================================
+# 三步起服务：
+#   1. cp .env.example .env   → 填好里面的值（尤其是 RCON / SSH 密码和 API Key）
+#   2. docker compose up -d --build
+#   3. docker compose logs -f
+#
+# 常用命令：
+#   docker compose run --rm mc-agent check    # 只跑配置体检，不启动监听
+#   docker compose ps                        # 看健康状态
+#   docker compose down                      # 停止
+# ================================================================
+
+services:
+  mc-agent:
+    build:
+      context: .
+      args:
+        UID: ${MC_UID:-1000}
+        GID: ${MC_GID:-1000}
+    image: mcserver-ai:latest
+    container_name: mc-agent
+    restart: unless-stopped
+
+    # 所有配置都从 .env 注入，启动时由 docker/entrypoint.py 生成 config.json
+    env_file:
+      - .env
+
+    extra_hosts:
+      # 让容器内的 host.docker.internal 指回宿主机
+      # （Docker Desktop 自带；Linux 上要靠这条，需要 Docker 20.10+）
+      - "host.docker.internal:host-gateway"
+
+    # ------------------------------------------------------------
+    # 可选挂载：
+    #   local 模式必须挂日志目录（只读），并把 MC_LOCAL_LOG_PATH 指向容器内路径
+    #   想用整份手写配置代替环境变量时，再挂 config.json（文件必须已存在！）
+    # ------------------------------------------------------------
+    # volumes:
+    #   - ${MC_LOG_DIR:-./logs}:/logs:ro
+    #   - ./config.json:/app/config.json:ro
+
+    # docker stop 时先给 15 秒收尾：容器里的 SIGTERM 会被转成 Ctrl+C 的优雅退出
+    stop_grace_period: 15s
+
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/entrypoint.py", "probe"]
+      interval: 30s
+      timeout: 8s
+      start_period: 20s
+      retries: 3
+
+    logging:
+      # 24/7 跑着，别让日志把磁盘写满
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

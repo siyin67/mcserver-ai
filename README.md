@@ -24,6 +24,7 @@
 - **真正的安全闸门**：黑名单 + 权限矩阵写在 Python 里，AI 只负责「提议」，不负责「放行」。
 - **不烧 token**：命中黑名单的请求在调用 AI 之前就被拦掉，一个 token 都不花。
 - **可插拔工具**：内置 `execute_rcon`（服务器指令）与 `execute_ssh`（只读主机状态）两个工具，加新工具只需注册一个函数。
+- **容器化**：`docker compose up -d --build` 就行；环境变量直接映射成配置，镜像里不烘焙任何密码。
 - **断线自愈**：SSH 掉线自动重连；本地模式下日志文件被删 / 轮转 / 截断也能自动跟上；单条消息异常不会带崩监听循环。
 - **配置与代码完全分离**：超时、长度上限、采样温度、机器人名字、触发词全在 `config.json`，代码里没有魔数。
 - **零个人配置入库**：仓库只带 `config.example.json`，真实配置被 `.gitignore` 挡在外面。
@@ -78,6 +79,12 @@
 ├── tools.py             # 执行层：配置读取、黑名单、权限矩阵、RCON / SSH(本机 subprocess) 工具
 ├── config.example.json  # 配置模板（真实配置 config.json 不入库）
 ├── requirements.txt     # 三个依赖：mcrcon / openai / paramiko
+├── Dockerfile           # 镜像：非 root、按需装依赖、带 TCP 健康检查
+├── docker-compose.yml   # 一条命令起服务
+├── docker/
+│   └── entrypoint.py    # 容器启动器：环境变量 → config.json、体检、健康检查、优雅退出
+├── .env.example         # 容器环境变量模板（真实 .env 不入库）
+├── .dockerignore        # 保证密码／配置不会被烘焙进镜像
 ├── .gitignore
 └── README.md
 ```
@@ -91,6 +98,7 @@
 - 一个能用 **SSH 密码登录**、且能 `tail` 到服务器日志的远端主机（云服务器 / 树莓派 / 甚至 Android 手机上的 Termux 都行）
   —— **`read_mode: "local"` 时不需要**：管家直接在本机读日志文件、跑本机命令
 - 一个兼容 OpenAI 协议的 API Key（默认走 DeepSeek：`https://api.deepseek.com`）
+- 或者只要 **Docker**：`docker compose up -d --build`，宿主机不用装 Python 和依赖（见下文「部署」）
 
 ---
 
@@ -120,6 +128,8 @@ python logger.py
 ```
 
 > `config.json` 在 `.gitignore` 里，**永远不会被提交**。仓库里只有 `config.example.json`。
+>
+> 不想在本机装 Python？跳到「部署 → Docker」，三条命令就能跑起来。
 
 ---
 
@@ -261,6 +271,30 @@ python logger.py
 ---
 
 ## 部署
+
+### Docker（推荐：挂在服务器上长期跑）
+
+镜像里**不含任何配置**：启动时由 `docker/entrypoint.py` 把环境变量翻译成 `config.json`。
+
+```bash
+cp .env.example .env        # 填 API Key、RCON、SSH（密码里的 $ 要写成 $$）
+docker compose up -d --build
+docker compose logs -f
+```
+
+| 要点 | 说明 |
+| --- | --- |
+| 填哪些变量 | `.env` 里都有注释；最少填 `DEEPSEEK_API_KEY`、`MC_RCON_*`，ssh 模式再填 `MC_SSH_*` |
+| `rcon.host` 填什么 | 容器里的 `127.0.0.1` 是容器自己，指宿主机要写 `host.docker.internal`（compose 已配好 `host-gateway`）或局域网 IP |
+| local 模式 | 必须把日志目录挂进容器（取消 compose 里 `volumes` 的注释）并把 `MC_LOCAL_LOG_PATH` 设成容器内路径 |
+| ⚠ 容器里的 local 模式 | `execute_ssh` 命令是在**容器内**执行的，看不到宿主机状态；想在容器里查宿主机，请用 ssh 模式连回宿主机 |
+| 配置体检 | `docker compose run --rm mc-agent check` |
+| 健康检查 | 每 30 秒 TCP 探活 RCON（ssh 模式再加 SSH）；只是提示，不会自动重启 |
+| 更新 | `git pull && docker compose up -d --build` |
+| 非 root | 容器默认用 uid/gid 1000 运行；挂载宿主机日志时用 `MC_UID` / `MC_GID` 对齐文件属主 |
+| 手写配置 | 也可以把 `config.json` 挂到 `/app/config.json`，此时环境变量只作兜底 |
+
+不装 Docker 时，下面三种方式任选：
 
 **Windows / 本地电脑**：直接 `python main.py`，关掉终端就停。
 
