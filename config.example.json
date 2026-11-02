@@ -1,0 +1,44 @@
+{
+    "bot_name": "大肥鱼",
+    "trigger_keyword": "@大肥鱼",
+
+    "deepseek_api_key": "sk-在这里填入你的DeepSeek密钥",
+    "deepseek_base_url": "https://api.deepseek.com",
+    "deepseek_model": "deepseek-chat",
+
+    "ssh": {
+        "host": "127.0.0.1",
+        "port": 22,
+        "username": "mcserver",
+        "password": "在这里填入SSH密码",
+        "remote_log_path": "~/minecraft/logs/latest.log"
+    },
+
+    "rcon": {
+        "host": "127.0.0.1",
+        "port": 25575,
+        "password": "在这里填入RCON密码"
+    },
+
+    "permissions": {
+        "op_whitelist": [],
+        "normal_player_allow": ["list", "tps", "help", "say", "time", "weather", "tpa"],
+        "absolute_block": ["stop", "reload", "op", "deop", "ban", "ban-ip", "pardon", "kill @a", "kill @e"]
+    },
+
+    "runtime": {
+        "max_tool_rounds": 3,
+        "request_timeout": 60,
+        "max_tokens": 800,
+        "temperature": 0.3,
+        "command_max_chars": 500,
+        "tellraw_max_chars": 160,
+        "ssh_output_max_chars": 1200,
+        "rcon_timeout": 10,
+        "ssh_connect_timeout": 10,
+        "ssh_command_timeout": 20,
+        "tail_channel_timeout": 1.0,
+        "reconnect_delay": 5.0,
+        "dedupe_window": 3.0
+    }
+}

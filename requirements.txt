@@ -1,0 +1,11 @@
+# 依赖库声明
+# ---------------------------------------------------------------
+# 安装：pip install -r requirements.txt
+#
+# mcrcon   —— RCON 客户端，用于向 Minecraft 服务端下发指令
+# openai   —— 调用兼容 OpenAI 协议的大模型实现 Function Calling
+# paramiko —— SSH 客户端，用于连接远端主机并实时 tail -F 服务器日志
+# ---------------------------------------------------------------
+mcrcon>=0.7.0
+openai>=1.0.0
+paramiko>=3.0.0
