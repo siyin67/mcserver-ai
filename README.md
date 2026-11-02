@@ -248,7 +248,7 @@ python logger.py
 
 ## 长期记忆：`memory.json`
 
-管家会给每位玩家存一份小档案，默认写在项目目录下的 `memory.json`（**已被 `.gitignore` 挡住**——里面有玩家的原话）：
+管家会给每位玩家存一份小档案，默认写在项目目录下的 `memory.json`（**已被 `.gitignore` 挡住**——里面有玩家的原话）。用 Docker 跑时不用管路径：compose 的 `mc-data` 卷会让 entrypoint 自动改写到 `/data/memory.json`，容器重建、升级镜像都不会丢。
 
 ```json
 {
@@ -344,6 +344,10 @@ docker compose logs -f
 | 配置体检 | `docker compose run --rm mc-agent check` |
 | 健康检查 | 每 30 秒 TCP 探活 RCON（ssh 模式再加 SSH）；只是提示，不会自动重启 |
 | 更新 | `git pull && docker compose up -d --build` |
+| 配置从哪来 | `config.json` 每次重建容器都会按 `.env` 重新生成——所以 **`.env` 才是唯一真相**，别在容器里手改 |
+| 长期记忆 | **默认就持久化**：compose 挂了命名卷 `mc-data:/data`，entrypoint 启动时自动把记忆写到 `/data/memory.json`，重建容器、升级镜像都不会丢，不用配任何变量。想改用宿主机目录就换成 `- ./data:/data`，并先 `chown 1000:1000 ./data` |
+| 备份 / 恢复记忆 | `docker run --rm -v mc-data:/data -v "$PWD":/backup busybox tar czf /backup/memory.tgz -C /data .`（恢复把 `czf` 改成 `xzf`） |
+| 不想留聊天记录 | `.env` 里 `MC_MEMORY_ENABLED=false`，完全不落盘任何对话 |
 | 非 root | 容器默认用 uid/gid 1000 运行；挂载宿主机日志时用 `MC_UID` / `MC_GID` 对齐文件属主 |
 | 手写配置 | 也可以把 `config.json` 挂到 `/app/config.json`，此时环境变量只作兜底 |
 

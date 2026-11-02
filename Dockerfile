@@ -41,6 +41,11 @@ RUN groupadd --gid "${GID}" mcagent \
  && useradd --uid "${UID}" --gid "${GID}" --create-home --shell /usr/sbin/nologin mcagent \
  && chown mcagent:mcagent /app
 
+# ---- 数据目录：卷挂到这里，长期记忆（memory.json）就跨容器重建保留 ----
+# 用命名卷时 Docker 会把镜像里 /data 的属主一起带过去，因此容器内开箱即可写；
+# 用宿主机目录挂载（bind）时属主以宿主机为准，需要自己 chown 成上面那个 UID。
+RUN mkdir -p /data && chown mcagent:mcagent /data
+
 # ---- 代码（显式列举，避免把 config.json / .env 之类的秘密带进镜像）----
 COPY --chown=mcagent:mcagent main.py agent_core.py logger.py tools.py config.example.json ./
 COPY --chown=mcagent:mcagent docker/ ./docker/

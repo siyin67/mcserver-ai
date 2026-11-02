@@ -39,6 +39,8 @@ docker/entrypoint.py —— 容器启动器
     MC_NORMAL_ALLOW                             permissions.normal_player_allow
     MC_ABSOLUTE_BLOCK                           permissions.absolute_block
     MC_RUNTIME_TEMPERATURE（任意 runtime 键）    runtime.temperature
+    MC_MEMORY_ENABLED（或任意 memory 键）        memory.enabled
+    MC_MEMORY_FILE                              memory.file（默认自动：挂了 /data 卷就写 /data/memory.json）
     MC_CONFIG_PATH                              配置文件落盘位置（默认 /app/config.json）
     MC_FORCE_ENV_CONFIG=1                       即使已有 config.json 也按环境变量重写
 
@@ -53,7 +55,7 @@ import signal
 import socket
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # ================================================================ 一、路径
 APP_DIR = Path(__file__).resolve().parent.parent          # 容器里就是 /app
@@ -61,6 +63,10 @@ EXAMPLE_PATH = APP_DIR / "config.example.json"
 CONFIG_PATH = Path(
     os.environ.get("MC_CONFIG_PATH") or (APP_DIR / "config.json")
 ).expanduser()
+
+# 容器里的数据目录：compose 会把卷挂到这里，长期记忆就落在卷上，
+# 容器重建 / 升级镜像都不会丢。没挂卷时这个目录不存在，会退回 APP_DIR。
+DATA_DIR = Path(os.environ.get("MC_DATA_DIR") or "/data").expanduser()
 
 
 def log(message: str) -> None:
@@ -133,6 +139,21 @@ def _put(section: Dict[str, Any], key: str, value: str, cast: Any = None) -> Non
         except ValueError:
             return
     section[key] = value
+
+
+def data_dir() -> Optional[Path]:
+    """
+    找可写的持久数据目录。
+
+    容器里 compose 把卷挂到 /data，这个目录就是「跨容器重建还存在」的那块地；
+    没挂卷时目录不存在，返回 None，调用方自己退回镜像内的 APP_DIR。
+    """
+    try:
+        if DATA_DIR.is_dir() and os.access(DATA_DIR, os.W_OK):
+            return DATA_DIR
+    except OSError:
+        pass
+    return None
 
 
 # ================================================================ 三、生成配置
@@ -209,6 +230,43 @@ def build_config() -> Dict[str, Any]:
         raw = env(f"MC_RUNTIME_{key.upper()}")
         if raw:
             runtime[key] = _coerce(raw, default)
+
+    # ---- 长期记忆：容器初始化时就把路径定好 ----
+    # 挂了数据卷 → 记忆落在卷上（/data/memory.json），重建容器、升级镜像都不丢；
+    # 没挂卷   → 退回镜像内 /app，能跑但重建即失，启动日志里会有明确提示。
+    # 你不需要为此写任何环境变量；想改路径或关掉记忆再设 MC_MEMORY_*。
+    memory = cfg.setdefault("memory", {})
+    memory_defaults = {
+        "file": "memory.json",
+        "enabled": True,
+        "history_limit": 6,
+        "inject_recent": 4,
+        "impression_every": 5,
+        "impression_max_chars": 20,
+        "max_players": 200,
+    }
+    for key, default in memory_defaults.items():
+        memory.setdefault(key, default)
+
+    data = data_dir()
+    if data is not None:
+        # 挂了卷：默认路径直接指向卷上，重建容器也不丢
+        memory["file"] = str(data / "memory.json")
+
+    # 显式环境变量优先级最高（改路径、关记忆都在这里）
+    for key, default in memory_defaults.items():
+        reference = memory.get(key, default)
+        raw = env(f"MC_MEMORY_{key.upper()}")
+        if raw:
+            memory[key] = _coerce(raw, reference)
+
+    if data is not None:
+        log(f"数据卷 {data} 已挂载，长期记忆将写入 {memory.get('file')}")
+    elif not env("MC_MEMORY_FILE"):
+        log(
+            f"没有可用的数据卷（{DATA_DIR} 不存在或不可写），"
+            f"长期记忆将写入容器内 {APP_DIR / 'memory.json'}，容器重建会丢失"
+        )
 
     return cfg
 

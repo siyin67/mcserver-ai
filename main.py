@@ -176,6 +176,16 @@ def _print_summary(cfg: Dict[str, Any]) -> None:
     print(f"  OP 白名单      : {op_list}")
     print(f"  玩家可用指令   : {allow_list}")
     print(f"  绝对禁止       : {block_list}")
+
+    # 长期记忆：这里只做展示，真正的合并与类型纠正在 agent_core.get_memory_config 里
+    mem_cfg = cfg.get("memory") or {}
+    mem_enabled = mem_cfg.get("enabled", True)
+    if isinstance(mem_enabled, str):
+        mem_enabled = mem_enabled.strip().lower() not in ("false", "0", "no", "off", "")
+    if mem_enabled:
+        print(f"  长期记忆       : 开启（{mem_cfg.get('file') or 'memory.json'}）")
+    else:
+        print("  长期记忆       : 关闭（不落盘任何聊天记录）")
     print("=" * 66)
 
 

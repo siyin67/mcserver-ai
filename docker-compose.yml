@@ -33,13 +33,22 @@ services:
       - "host.docker.internal:host-gateway"
 
     # ------------------------------------------------------------
-    # 可选挂载：
+    # 默认挂载（开箱即用）：
+    #   mc-data:/data —— 长期记忆落在这里。容器重建、升级镜像都不丢记忆。
+    #   路径由 docker/entrypoint.py 在启动时自动指到 /data/memory.json，
+    #   不需要你写任何环境变量。
+    #
+    # 其他可选挂载：
     #   local 模式必须挂日志目录（只读），并把 MC_LOCAL_LOG_PATH 指向容器内路径
     #   想用整份手写配置代替环境变量时，再挂 config.json（文件必须已存在！）
+    #
+    # 想直接用宿主机目录存记忆，把下面那行换成：
+    #   - ./data:/data        # 记得先在宿主机 chown 成容器 uid（默认 1000）
     # ------------------------------------------------------------
-    # volumes:
-    #   - ${MC_LOG_DIR:-./logs}:/logs:ro
-    #   - ./config.json:/app/config.json:ro
+    volumes:
+      - mc-data:/data
+      # - ${MC_LOG_DIR:-./logs}:/logs:ro
+      # - ./config.json:/app/config.json:ro
 
     # docker stop 时先给 15 秒收尾：容器里的 SIGTERM 会被转成 Ctrl+C 的优雅退出
     stop_grace_period: 15s
@@ -57,3 +66,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# ------------------------------------------------------------
+# 命名卷：长期记忆（memory.json）存在这里，容器重建 / 镜像升级都不丢。
+# 备份：docker run --rm -v mc-data:/data -v "$PWD":/backup busybox \
+#         tar czf /backup/memory-backup.tgz -C /data .
+# 恢复：docker run --rm -v mc-data:/data -v "$PWD":/backup busybox \
+#         tar xzf /backup/memory-backup.tgz -C /data
+# ------------------------------------------------------------
+volumes:
+  mc-data:
