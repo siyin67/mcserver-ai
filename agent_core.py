@@ -425,6 +425,7 @@ def _impression_worker(player: str, cfg: Dict[str, Any]) -> None:
             f"最近对话：\n" + "\n".join(lines) + "\n\n"
             f"请用一句不超过 {int(mem_cfg['impression_max_chars'])} 个字的中文，"
             f"概括这位玩家的偏好、常做的事或说话风格，并融合旧印象。\n"
+            f"要注意保留旧印像的关键信息\n"
             f"只输出这句话本身：不要引号、不要前缀、不要解释、不要换行。"
         )
 
